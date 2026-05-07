@@ -28,9 +28,6 @@
 #ifdef HAVE_ERRNO_H
 #include <errno.h>
 #endif
-#if HAVE_STDINT_H
-#include <stdint.h>
-#endif
 #ifdef HAVE_STDLIB_H
 #include <stdlib.h>
 #endif
@@ -438,8 +435,6 @@ static void	arm_Init(struct _7zip *);
 static size_t	arm_Convert(struct _7zip *, uint8_t *, size_t);
 static size_t	arm64_Convert(struct _7zip *, uint8_t *, size_t);
 static ssize_t		Bcj2_Decode(struct _7zip *, uint8_t *, size_t);
-static size_t	sparc_Convert(struct _7zip *, uint8_t *, size_t);
-static size_t	powerpc_Convert(struct _7zip *, uint8_t *, size_t);
 
 
 int
@@ -772,27 +767,29 @@ archive_read_format_7zip_read_header(struct archive_read *a,
 
 	if (zip_entry->attr & supported_attrs) {
 		char *fflags_text, *ptr;
-		/* allocate for ",rdonly,hidden,system" */
-		fflags_text = malloc(22 * sizeof(*fflags_text));
+		/* allocate for "rdonly,hidden,system," */
+		fflags_text = malloc(22 * sizeof(char));
 		if (fflags_text != NULL) {
-			ptr = fflags_text;
-			if (zip_entry->attr & FILE_ATTRIBUTE_READONLY) {
-				strcpy(ptr, ",rdonly");
-				ptr = ptr + 7;
-			}
-			if (zip_entry->attr & FILE_ATTRIBUTE_HIDDEN) {
-				strcpy(ptr, ",hidden");
-				ptr = ptr + 7;
-			}
-			if (zip_entry->attr & FILE_ATTRIBUTE_SYSTEM) {
-				strcpy(ptr, ",system");
-				ptr = ptr + 7;
-			}
-			if (ptr > fflags_text) {
-				archive_entry_copy_fflags_text(entry,
-				    fflags_text + 1);
-			}
-			free(fflags_text);
+			ptr = fflags_text; 
+			if (zip_entry->attr & FILE_ATTRIBUTE_READONLY) { 
+ 			strcpy(ptr, "rdonly,"); 
+ 			ptr = ptr + 7; 
+ 		} 
+ 		if (zip_entry->attr & FILE_ATTRIBUTE_HIDDEN) { 
+ 			strcpy(ptr, "hidden,"); 
+ 			ptr = ptr + 7; 
+ 		} 
+ 		if (zip_entry->attr & FILE_ATTRIBUTE_SYSTEM) { 
+ 			strcpy(ptr, "system,"); 
+ 			ptr = ptr + 7; 
+ 		} 
+ 		if (ptr > fflags_text) { 
+ 			/* Delete trailing comma */ 
+ 			*(ptr - 1) = '\0'; 
+ 			archive_entry_copy_fflags_text(entry, 
+				fflags_text); 
+ 		} 
+ 		free(fflags_text); 
 		}
 	}
 
@@ -838,20 +835,9 @@ archive_read_format_7zip_read_header(struct archive_read *a,
 			zip_entry->mode |= AE_IFREG;
 			archive_entry_set_mode(entry, zip_entry->mode);
 		} else {
-			struct archive_string_conv* utf8_conv;
-
 			symname[symsize] = '\0';
-
-			/* Symbolic links are embedded as UTF-8 strings */
-			utf8_conv = archive_string_conversion_from_charset(&a->archive,
-			    "UTF-8", 1);
-			if (utf8_conv == NULL) {
-				free(symname);
-				return ARCHIVE_FATAL;
-			}
-
-			archive_entry_copy_symlink_l(entry, (const char*)symname, symsize,
-			    utf8_conv);
+			archive_entry_copy_symlink(entry,
+			    (const char *)symname);
 		}
 		free(symname);
 		archive_entry_set_size(entry, 0);
@@ -869,7 +855,7 @@ archive_read_format_7zip_read_data(struct archive_read *a,
     const void **buff, size_t *size, int64_t *offset)
 {
 	struct _7zip *zip;
-	ssize_t bytes;
+	size_t bytes;
 	int ret = ARCHIVE_OK;
 
 	zip = (struct _7zip *)(a->format->data);
@@ -891,9 +877,10 @@ archive_read_format_7zip_read_data(struct archive_read *a,
 	if (zip->end_of_entry)
 		return (ARCHIVE_EOF);
 
-	size_t bytes_to_read = 16 * 1024 * 1024;  // Don't try to read more than 16 MB at a time
+	const uint64_t max_read_size = 16 * 1024 * 1024;  // Don't try to read more than 16 MB at a time
+	size_t bytes_to_read = max_read_size;
 	if ((uint64_t)bytes_to_read > zip->entry_bytes_remaining) {
-		bytes_to_read = (size_t)zip->entry_bytes_remaining;
+		bytes_to_read = zip->entry_bytes_remaining;
 	}
 	bytes = read_stream(a, buff, bytes_to_read, 0);
 	if (bytes < 0)
@@ -1076,8 +1063,8 @@ ppmd_read(void *p)
 		 */
 		ssize_t bytes_avail = 0;
 		const uint8_t* data = __archive_read_ahead(a,
-		    (size_t)zip->ppstream.stream_in+1, &bytes_avail);
-		if(data == NULL || bytes_avail < zip->ppstream.stream_in+1) {
+		    zip->ppstream.stream_in+1, &bytes_avail);
+		if(bytes_avail < zip->ppstream.stream_in+1) {
 			archive_set_error(&a->archive,
 			    ARCHIVE_ERRNO_FILE_FORMAT,
 			    "Truncated 7z file data");
@@ -1114,9 +1101,7 @@ init_decompression(struct archive_read *a, struct _7zip *zip,
 			if (coder2->codec != _7Z_X86 &&
 			    coder2->codec != _7Z_X86_BCJ2 &&
 			    coder2->codec != _7Z_ARM &&
-			    coder2->codec != _7Z_ARM64 &&
-			    coder2->codec != _7Z_POWERPC &&
-			    coder2->codec != _7Z_SPARC) {
+			    coder2->codec != _7Z_ARM64) {
 				archive_set_error(&a->archive,
 				    ARCHIVE_ERRNO_MISC,
 				    "Unsupported filter %lx for %lx",
@@ -1715,10 +1700,6 @@ decompress(struct archive_read *a, struct _7zip *zip,
 			*outbytes = arm_Convert(zip, buff, *outbytes);
 		} else if (zip->codec2 == _7Z_ARM64) {
 			*outbytes = arm64_Convert(zip, buff, *outbytes);
-		} else if (zip->codec2 == _7Z_SPARC) {
-			*outbytes = sparc_Convert(zip, buff, *outbytes);
-		} else if (zip->codec2 == _7Z_POWERPC) {
-			*outbytes = powerpc_Convert(zip, buff, *outbytes);
 		}
 	}
 
@@ -1785,10 +1766,6 @@ free_decompression(struct archive_read *a, struct _7zip *zip)
 		}
 		zip->stream_valid = 0;
 	}
-#endif
-#ifdef HAVE_ZSTD_H
-	if (zip->zstdstream_valid)
-		ZSTD_freeDStream(zip->zstd_dstream);
 #endif
 	if (zip->ppmd7_valid) {
 		__archive_ppmd7_functions.Ppmd7_Free(
@@ -2331,7 +2308,7 @@ read_SubStreamsInfo(struct archive_read *a, struct _7z_substream_info *ss,
 	usizes = ss->unpackSizes;
 	for (i = 0; i < numFolders; i++) {
 		unsigned pack;
-		uint64_t size, sum;
+		uint64_t sum;
 
 		if (f[i].numUnpackStreams == 0)
 			continue;
@@ -2341,15 +2318,10 @@ read_SubStreamsInfo(struct archive_read *a, struct _7z_substream_info *ss,
 			for (pack = 1; pack < f[i].numUnpackStreams; pack++) {
 				if (parse_7zip_uint64(a, usizes) < 0)
 					return (-1);
-				if (*usizes > UINT64_MAX - sum)
-					return (-1);
 				sum += *usizes++;
 			}
 		}
-		size = folder_uncompressed_size(&f[i]);
-		if (size < sum)
-			return (-1);
-		*usizes++ = size - sum;
+		*usizes++ = folder_uncompressed_size(&f[i]) - sum;
 	}
 
 	if (type == kSize) {
@@ -2443,8 +2415,6 @@ read_StreamsInfo(struct archive_read *a, struct _7z_stream_info *si)
 		packPos = si->pi.pos;
 		for (i = 0; i < si->pi.numPackStreams; i++) {
 			si->pi.positions[i] = packPos;
-			if (packPos > UINT64_MAX - si->pi.sizes[i])
-				return (-1);
 			packPos += si->pi.sizes[i];
 			if (packPos > zip->header_offset)
 				return (-1);
@@ -2466,10 +2436,6 @@ read_StreamsInfo(struct archive_read *a, struct _7z_stream_info *si)
 		f = si->ci.folders;
 		for (i = 0; i < si->ci.numFolders; i++) {
 			f[i].packIndex = packIndex;
-			if (f[i].numPackedStreams > UINT32_MAX)
-				return (-1);
-			if (packIndex > UINT32_MAX - (uint32_t)f[i].numPackedStreams)
-				return (-1);
 			packIndex += (uint32_t)f[i].numPackedStreams;
 			if (packIndex > si->pi.numPackStreams)
 				return (-1);
@@ -3034,7 +3000,7 @@ slurp_central_directory(struct archive_read *a, struct _7zip *zip,
 	/* CRC check. */
 	if (crc32(0, (const unsigned char *)p + 12, 20)
 	    != archive_le32dec(p + 8)) {
-#ifndef DONT_FAIL_ON_CRC_ERROR
+#ifdef DONT_FAIL_ON_CRC_ERROR
 		archive_set_error(&a->archive, -1, "Header CRC error");
 		return (ARCHIVE_FATAL);
 #endif
@@ -3176,7 +3142,7 @@ get_uncompressed_data(struct archive_read *a, const void **buff, size_t size,
 		/* Copy mode. */
 
 		*buff = __archive_read_ahead(a, minimum, &bytes_avail);
-		if (*buff == NULL) {
+		if (bytes_avail <= 0) {
 			archive_set_error(&a->archive,
 			    ARCHIVE_ERRNO_FILE_FORMAT,
 			    "Truncated 7-Zip file data");
@@ -3482,7 +3448,7 @@ read_stream(struct archive_read *a, const void **buff, size_t size,
 	/*
 	 * Skip the bytes we already has skipped in skip_stream().
 	 */
-	while (1) {
+	while (skip_bytes) {
 		ssize_t skipped;
 
 		if (zip->uncompressed_buffer_bytes_remaining == 0) {
@@ -3502,10 +3468,6 @@ read_stream(struct archive_read *a, const void **buff, size_t size,
 				return (ARCHIVE_FATAL);
 			}
 		}
-
-		if (!skip_bytes)
-			break;
-
 		skipped = get_uncompressed_data(
 			a, buff, (size_t)skip_bytes, 0);
 		if (skipped < 0)
@@ -4018,121 +3980,6 @@ arm64_Convert(struct _7zip *zip, uint8_t *buf, size_t size)
 	return i;
 }
 
-static size_t
-sparc_Convert(struct _7zip *zip, uint8_t *buf, size_t size)
-{
-	// This function was adapted from
-	// static size_t bcj_sparc(struct xz_dec_bcj *s, uint8_t *buf, size_t size)
-	// in https://git.tukaani.org/xz-embedded.git
-
-	/*
-	 * Branch/Call/Jump (BCJ) filter decoders
-	 *
-	 * Authors: Lasse Collin <lasse.collin@tukaani.org>
-	 *          Igor Pavlov <https://7-zip.org/>
-	 *
-	 * Copyright (C) The XZ Embedded authors and contributors
-	 *
-	 * Permission to use, copy, modify, and/or distribute this
-	 * software for any purpose with or without fee is hereby granted.
-	 *
-	 * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
-	 * WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
-	 * WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL
-	 * THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
-	 * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-	 * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
-	 * NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-	 * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-	 */
-
-	size_t i;
-	uint32_t instr;
-
-	size &= ~(size_t)3;
-
-	for (i = 0; i < size; i += 4) {
-		instr = (uint32_t)(buf[i] << 24)
-			| ((uint32_t)buf[i+1] << 16)
-			| ((uint32_t)buf[i+2] << 8)
-			| (uint32_t)buf[i+3];
-
-		if ((instr >> 22) == 0x100 || (instr >> 22) == 0x1FF) {
-			instr <<= 2;
-			instr -= zip->bcj_ip + (uint32_t)i;
-			instr >>= 2;
-			instr = ((uint32_t)0x40000000 - (instr & 0x400000))
-			        | 0x40000000 | (instr & 0x3FFFFF);
-
-			buf[i] = (uint8_t)(instr >> 24);
-			buf[i+1] = (uint8_t)(instr >> 16);
-			buf[i+2] = (uint8_t)(instr >> 8);
-			buf[i+3] = (uint8_t)instr;
-		}
-	}
-
-	zip->bcj_ip += (uint32_t)i;
-
-	return i;
-}
-
-static size_t
-powerpc_Convert(struct _7zip *zip, uint8_t *buf, size_t size)
-{
-	// This function was adapted from
-	// static size_t powerpc_code(void *simple, uint32_t now_pos, bool is_encoder, uint8_t *buffer, size_t size)
-	// in https://git.tukaani.org/xz.git
-
-	/*
-	 * Filter for PowerPC (big endian) binaries
-	 *
-	 * Authors: Igor Pavlov
-	 *          Lasse Collin
-	 *
-	 * Copyright (C) The XZ Utils authors and contributors
-	 *
-	 * Permission to use, copy, modify, and/or distribute this
-	 * software for any purpose with or without fee is hereby granted.
-	 *
-	 * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL
-	 * WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED
-	 * WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL
-	 * THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR
-	 * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-	 * LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT,
-	 * NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
-	 * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
-	 */
-
-	size &= ~(size_t)3;
-
-	size_t i;
-	for (i = 0; i < size; i += 4) {
-		// PowerPC branch 6(48) 24(Offset) 1(Abs) 1(Link)
-		if ((buf[i] >> 2) == 0x12
-			&& ((buf[i + 3] & 3) == 1)) {
-
-			const uint32_t src
-				= (((uint32_t)(buf[i + 0]) & 3) << 24)
-				| ((uint32_t)(buf[i + 1]) << 16)
-				| ((uint32_t)(buf[i + 2]) << 8)
-				| ((uint32_t)(buf[i + 3]) & ~UINT32_C(3));
-
-			uint32_t dest = src - (zip->bcj_ip + (uint32_t)(i));
-
-			buf[i + 0] = 0x48 | ((dest >> 24) &  0x03);
-			buf[i + 1] = (dest >> 16);
-			buf[i + 2] = (dest >> 8);
-			buf[i + 3] &= 0x03;
-			buf[i + 3] |= dest;
-		}
-	}
-
-	zip->bcj_ip += (uint32_t)i;
-
-	return i;
-}
-
 /*
  * Brought from LZMA SDK.
  *
@@ -4155,17 +4002,8 @@ powerpc_Convert(struct _7zip *zip, uint8_t *buf, size_t size)
 
 #define RC_READ_BYTE (*buffer++)
 #define RC_TEST { if (buffer == bufferLim) return SZ_ERROR_DATA; }
-#define RC_INIT2 do {							\
-	zip->bcj2_code = 0;						\
-	zip->bcj2_range = 0xFFFFFFFF;					\
-	{								\
-		int ii;							\
-		for (ii = 0; ii < 5; ii++) {				\
-			RC_TEST;					\
-			zip->bcj2_code = (zip->bcj2_code << 8) | RC_READ_BYTE; \
-		}							\
-	}								\
-} while (0)
+#define RC_INIT2 zip->bcj2_code = 0; zip->bcj2_range = 0xFFFFFFFF; \
+  { int ii; for (ii = 0; ii < 5; ii++) { RC_TEST; zip->bcj2_code = (zip->bcj2_code << 8) | RC_READ_BYTE; }}
 
 #define NORMALIZE if (zip->bcj2_range < kTopValue) { RC_TEST; zip->bcj2_range <<= 8; zip->bcj2_code = (zip->bcj2_code << 8) | RC_READ_BYTE; }
 
