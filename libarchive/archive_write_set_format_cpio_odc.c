@@ -288,22 +288,22 @@ write_header(struct archive_write *a, struct archive_entry *entry)
 	ret_final = ARCHIVE_OK;
 	sconv = get_sconv(a);
 
-#if defined(_WIN32) && !defined(__CYGWIN__)
-	/* Make sure the path separators in pathname, hardlink and symlink
-	 * are all slash '/', not the Windows path separator '\'. */
-	entry_main = __la_win_entry_in_posix_pathseparator(entry);
-	if (entry_main == NULL) {
-		archive_set_error(&a->archive, ENOMEM,
-		    "Can't allocate ustar data");
-		return(ARCHIVE_FATAL);
-	}
-	if (entry != entry_main)
-		entry = entry_main;
-	else
-		entry_main = NULL;
-#else
-	entry_main = NULL;
-#endif
+//#if defined(_WIN32) && !defined(__CYGWIN__)   Modified By SMIRT
+//	/* Make sure the path separators in pathname, hardlink and symlink
+//	 * are all slash '/', not the Windows path separator '\'. */
+//	entry_main = __la_win_entry_in_posix_pathseparator(entry);
+//	if (entry_main == NULL) {
+//		archive_set_error(&a->archive, ENOMEM,
+//		    "Can't allocate ustar data");
+//		return(ARCHIVE_FATAL);
+//	}
+//	if (entry != entry_main)
+//		entry = entry_main;
+//	else
+//		entry_main = NULL;
+//#else
+//	entry_main = NULL;
+//#endif Modified By SMIRT
 
 	ret = archive_entry_pathname_l(entry, &path, &len, sconv);
 	if (ret != 0) {
